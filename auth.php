@@ -216,4 +216,120 @@ function adminLogout() {
     generateCSRFToken();
 }
 
+/**
+ * Notify admins of customer login (for real-time updates)
+ */
+function notifyCustomerLogin($userId) {
+    try {
+        $db = Database::getInstance()->getConnection();
+        
+        // Get user details
+        $stmt = $db->prepare("SELECT name, email, phone FROM users WHERE id = ?");
+        $stmt->execute([$userId]);
+        $user = $stmt->fetch();
+        
+        if(!$user) return;
+        
+        // Create notification
+        $stmt = $db->prepare("
+            INSERT INTO notifications 
+            (type, title, message, user_id, is_read, created_at)
+            VALUES 
+            ('customer_login', 'Customer Login', 
+             CONCAT(?, ' just logged in'), ?, 0, NOW())
+        ");
+        $stmt->execute([$user['name'], $userId]);
+        
+        // Update last login
+        $stmt = $db->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
+        $stmt->execute([$userId]);
+        
+        // Log activity
+        logUserActivity($db, $userId, 'Customer Login', "User logged in from {$_SERVER['REMOTE_ADDR']}");
+        
+    } catch(Exception $e) {
+        error_log("Login notification error: " . $e->getMessage());
+    }
+}
+
+/**
+ * Notify admins of new customer registration
+ */
+function notifyNewRegistration($userId, $userName, $userEmail, $userPhone) {
+    try {
+        $db = Database::getInstance()->getConnection();
+        
+        // Create notification
+        $stmt = $db->prepare("
+            INSERT INTO notifications 
+            (type, title, message, user_id, metadata, is_read, created_at)
+            VALUES 
+            ('new_customer', 'New Customer Registered', 
+             CONCAT(?, ' has just registered'), ?, ?, 0, NOW())
+        ");
+        
+        $metadata = json_encode([
+            'email' => $userEmail,
+            'phone' => $userPhone
+        ]);
+        
+        $stmt->execute([$userName, $userId, $metadata]);
+        
+        // Log activity
+        logUserActivity($db, $userId, 'Customer Registration', "New customer registered");
+        
+    } catch(Exception $e) {
+        error_log("Registration notification error: " . $e->getMessage());
+    }
+}
+
+/**
+ * Check if user has paid registration fee
+ */
+function hasPaidRegistrationFee($userId = null) {
+    if ($userId === null) {
+        $userId = getCurrentUserId();
+    }
+    
+    if (!$userId) {
+        return false;
+    }
+    
+    $db = Database::getInstance()->getConnection();
+    
+    try {
+        $stmt = $db->prepare("
+            SELECT payment_status 
+            FROM registration_fees 
+            WHERE user_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ");
+        $stmt->execute([$userId]);
+        $payment = $stmt->fetch();
+        
+        return $payment && $payment['payment_status'] == 'success';
+        
+    } catch (Exception $e) {
+        // If table doesn't exist yet, assume fee is paid (for backward compatibility)
+        error_log("Check registration fee error: " . $e->getMessage());
+        return true;
+    }
+}
+
+/**
+ * Require registration fee payment
+ * Redirects to payment page if fee not paid
+ */
+function requireRegistrationFee() {
+    if (!isLoggedIn()) {
+        return; // Let requireLogin() handle this
+    }
+    
+    if (!hasPaidRegistrationFee()) {
+        header('Location: pay-registration-fee.php');
+        exit();
+    }
+}
+
 ?>
